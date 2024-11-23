@@ -1,0 +1,489 @@
+---
+title: "CamCAN Online vs Paper Validation"
+output: html_document
+---
+
+```{r, include = FALSE}
+
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, warning=TRUE, message = TRUE, fig.path = 'plots/', dev = 'png') #full results
+
+library(GGally)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(patchwork)
+library(irr) #ICC value 
+library(lmerTest)
+library(dplyr) 
+library(tidyr)
+library(flextable)
+library(kableExtra)
+
+
+```
+
+```{r, include = FALSE}
+scatterplot <- function(data, x_var, y_var, color_var, 
+                        x_label, y_label, title,
+                        color_values, 
+                        color_labels,
+                        x_discrete_labels) {
+  ggplot(data, aes_string(x = x_var, y = y_var, color = paste0("factor(", color_var, ")"))) +
+    geom_point(size = 1, stroke = 1) +
+    geom_smooth(method = "lm", se = TRUE, formula = y ~ poly(x, 2), aes_string(color = paste0("factor(", color_var, ")"))) +
+    labs(x = x_label, y = y_label, color = NULL, title = title) +
+    theme_minimal() +
+    theme(
+      legend.position = "top",
+      legend.justification = c(0, 1),
+      legend.background = element_rect(fill = "transparent", color = NA),
+      plot.title = element_text(hjust = 0.5, vjust = 3, size = 12)
+    ) +
+    scale_color_manual(values = color_values, labels = color_labels) 
+    # scale_x_discrete(labels = x_discrete_labels)
+}
+
+scatterplot_online_paper <- function(data, x_var, y_var, color_var, shape_var, 
+                                     x_label, y_label, title,
+                                     color_values, 
+                                     color_labels,
+                                     shape_values, shape_labels,
+                                     xlim_values, ylim_values) {
+  ggplot(data, aes_string(x = x_var, y = y_var, color = color_var, shape = shape_var)) +
+    geom_point(size = 3, stroke = 1) +
+    geom_smooth(method = "lm", se = TRUE, aes(group = 1), color = "red") +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +  # Add the black dotted line
+    labs(x = x_label, y = y_label, color = color_var, shape = shape_var, title = title) +
+    theme_minimal() +
+    theme(
+      legend.position = "right",
+      legend.background = element_rect(fill = "transparent", color = NA),
+      plot.title = element_text(hjust = 0.5, vjust = 3, size = 12)
+    ) +
+    scale_color_manual(values = color_values, labels = color_labels) +
+    scale_shape_manual(values = shape_values, labels = shape_labels) + 
+    guides(color = FALSE, shape = FALSE)  +
+    coord_equal() +
+    xlim(xlim_values) +
+    ylim(ylim_values)
+}
+
+```
+
+## Cattell
+
+```{r}
+
+mydata <- read.csv("cattell_long_paper_online_average_sum.csv")
+mydataW <- read.csv("cattell_wide_paper_online_average_sum.csv")
+
+boxplot(mydata$Score, main="Boxplot to Identify Outliers", ylab="Values", col="lightblue")
+outliers <- boxplot.stats(mydata$Score)$out
+outliers_CCID <- mydata$Participant[mydata$Score %in% outliers] #no outliers 
+
+# mydata$Score[mydata$Participant %in% outliers_CCID] <- NA
+
+# cor and icc
+cor.test(mydata$Score[mydata$Format==1], mydata$Score[mydata$Format==0])
+
+icc_df <- data.frame(mydata$Score[mydata$Format==1], mydata$Score[mydata$Format==0])
+
+icc_A_cat <- icc(icc_df, model = "twoway", type = "agreement", unit = "single")
+icc_C_cat <- icc(icc_df, model = "twoway", type = "consistency", unit = "single")
+
+icc_A_cat
+icc_C_cat
+
+mydataW$Order <- as.factor(mydataW$Order)
+mydataW$Version <- as.factor(mydataW$Version)
+mydataW$Age <- as.factor(mydataW$Age)
+
+ct_plot <- scatterplot_online_paper(mydataW, "Online", "Paper", "Age", "Version",
+  "Online", "Paper", "Cattell", c("green", "blue", "red"), c("Young", "Middle", "Older"), 
+  c(1, 0), c("1" = "Odd Online", "0" = "Even Online"), c(10, 23), c(10, 23))
+
+ct_plot
+
+# prep data
+
+mydata$Score <- as.numeric(mydata$Score)
+mydata$Format <- factor(mydata$Format)
+mydata$Order <- factor(mydata$Order)
+mydata$Version <- factor(mydata$Version) 
+mydata$Age <- as.numeric(mydata$Age) # Linear effects of Age only
+
+# full -> eliminate
+
+ct <- lmer(Score ~ Age*Format*Version*Order + (1|Participant), data = mydata)
+#summary(ct)
+ct_full <- car::Anova(ct, type=3, test.statistic="F")
+ct_full
+
+simple <- step(ct, ddf = "Satterthwaite", alpha.random = 0.1, alpha.fixed = 0.05, reduce.fixed = TRUE, reduce.random = TRUE, direction = "both")
+m <- get_model(simple)
+#summary(m)
+ct_sim <- car::Anova(m, type=3, test.statistic="F")
+ct_sim 
+
+# Simple effects for Format:Version
+
+# Even Online: Online - Paper
+even_online <- t.test(mydata$Score[mydata$Format==1 & mydata$Version==0], mydata$Score[mydata$Format==0 & mydata$Version==0], paired = TRUE)
+# Odd Online: Online - Paper
+odd_online <- t.test(mydata$Score[mydata$Format==1 & mydata$Version==1], mydata$Score[mydata$Format==0 & mydata$Version==1], paired = TRUE)
+
+even_online 
+odd_online 
+
+version_plot <- ggplot(mydata, aes(x = factor(Version), y = Score, color = factor(Format))) +
+  geom_point(position = position_dodge(width = 1), shape = 16) +
+  geom_boxplot(alpha = 0.2, position = position_dodge(width = 1)) +
+  stat_compare_means(label = "p.signif", method = "t.test", paired = TRUE, aes(group = interaction(Format, Version)), label.y = 24) +
+  labs(x = "", color = "Format") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    legend.title = element_text(hjust = 0.5, size = 12),
+    legend.text = element_text(size = 10)
+  ) +
+  scale_color_manual(values = c("0" = "orange", "1" = "darkblue"), labels = c("1" = "Online", "0" = "Paper")) +
+  scale_x_discrete(labels = c("0" = "Even online", "1" = "Odd online")) +
+  ylim(5, 25) 
+
+version_plot
+
+# block analysis
+mydataL <- mydata %>%
+  pivot_longer(cols = starts_with("Score_"),
+               names_to = "block",
+               names_prefix = "Score_",
+               values_to = "block_score")
+
+mydataL$block_score <- as.numeric(mydataL$block_score)
+mydataL$Format <- factor(mydataL$Format)
+mydataL$block <- as.numeric(mydataL$block)
+mydata$Age <- as.numeric(mydata$Age)
+
+ct <- lmer(block_score ~ Age*Format*scale(block) + (1|Participant), data = mydataL)
+block_full <- car::Anova(ct, type=3, test.statistic="F")
+block_full
+
+simple <- step(ct, ddf = "Satterthwaite", alpha.random = 0.1, alpha.fixed = 0.05, reduce.fixed = TRUE, reduce.random = FALSE, direction = "both")
+m <- get_model(simple)
+# summary(m)
+block_sim <- car::Anova(m, type=3, test.statistic="F")
+block_sim
+
+```
+
+## STW 
+
+```{r}
+
+mydata <- read.csv("STW_long_av_score_summary.csv")
+mydata <- subset(mydata, mydata$Version == 1) #version A only 
+mydataW <- read.csv("STW_wide_av_score_summary.csv")
+
+boxplot(mydata$Score, main="Boxplot to Identify Outliers", ylab="Values", col="lightblue")
+outliers <- boxplot.stats(mydata$Score)$out
+outliers_CCID <- mydata$Participant[mydata$Score %in% outliers]
+
+mydata$Score[mydata$Participant %in% outliers_CCID] <- NA  #used in the analysis 
+
+mydataW$Online_A[mydataW$Participant %in% outliers_CCID] <- NA #for plot
+mydataW$Paper_A[mydataW$Participant %in% outliers_CCID] <- NA  #for plot
+
+mydataW$Online_B[mydataW$Participant %in% outliers_CCID] <- NA #for plot
+mydataW$Paper_B[mydataW$Participant %in% outliers_CCID] <- NA  #for plot
+
+cor.test(mydata$Score[mydata$Format==1], mydata$Score[mydata$Format==0])
+
+icc_df <- data.frame(mydata$Score[mydata$Format==1], mydata$Score[mydata$Format==0])
+
+icc_A_stw <- icc(icc_df, model = "twoway", type = "agreement", unit = "single")
+icc_C_stw <- icc(icc_df, model = "twoway", type = "consistency", unit = "single")
+
+icc_A_stw
+icc_C_stw
+
+mydataW$Odd_Even <- as.factor(mydataW$Odd_Even)
+mydataW$Age <- as.factor(mydataW$Age)
+
+stw_plot <- scatterplot_online_paper(mydataW, "Online_A", "Paper_A", "Age", "Odd_Even",
+                         "Online", "Paper", "STW", c("green", "blue", "red"), 
+                         c("Young", "Middle", "Older"), c(1, 0), 
+                         c("1" = "Odd Online", "0" = "Even Online"), c(22, 30), c(22, 30))
+stw_plot
+
+# Mixed-effects -----------------------------------------------------------
+
+mydata$Score <- as.numeric(mydata$Score)
+mydata$Format <- factor(mydata$Format)
+mydata$Order <- factor(mydata$Order)
+mydata$Version <- factor(mydata$Version)
+mydata$Age <- as.numeric(mydata$Age)
+
+stw <- lmer(Score ~ Age*Format*Order + (1|Participant), data = mydata)
+# summary(stw) 
+car::Anova(stw, type=3, test.statistic="F")
+
+# Eliminate
+simple <- step(stw, ddf = "Satterthwaite", alpha.random = 0.1, alpha.fixed = 0.05, reduce.fixed = TRUE, reduce.random = TRUE, direction = "both")
+m <- get_model(simple)
+# summary(m)
+car::Anova(m, type=3, test.statistic="F")
+
+# Version B 
+
+mydata <- read.csv("STW_long_av_score_summary.csv")
+mydata <- subset(mydata, mydata$Version == 0) #version B
+cor.test(mydata$Score[mydata$Format==1], mydata$Score[mydata$Format==0])
+
+icc_df <- data.frame(mydata$Score[mydata$Format==1], mydata$Score[mydata$Format==0])
+
+icc_A_stw_B <- icc(icc_df, model = "twoway", type = "agreement", unit = "single")
+icc_C_stw_B <- icc(icc_df, model = "twoway", type = "consistency", unit = "single")
+
+icc_A_stw_B
+icc_C_stw_B
+
+```
+
+## LM 
+
+```{r}
+
+# 0 = imm	
+# 1 = del	
+# online = 1	
+# online_A = 1 	
+# online_first = 1	
+
+mydata <- read.csv("lm_long_av_score_summary.csv")
+mydataW <- read.csv("lm_wide_av_score_summary.csv")
+
+Imm <- subset(mydata, mydata$Imm_Del == 0)
+Del <- subset(mydata, mydata$Imm_Del == 1)
+
+boxplot(Imm$Score, main="Boxplot to Identify Outliers", ylab="Values", col="lightblue")
+boxplot(Del$Score, main="Boxplot to Identify Outliers", ylab="Values", col="lightblue")
+
+cor.test(Imm$Score[Imm$Format==1], Imm$Score[Imm$Format==0])
+cor.test(Del$Score[Del$Format==1], Del$Score[Del$Format==0])
+
+icc_df <- data.frame(Imm$Score[Imm$Format==1], Imm$Score[Imm$Format==0])
+
+icc_A_imm <- icc(icc_df, model = "twoway", type = "agreement", unit = "single")
+icc_C_imm <- icc(icc_df, model = "twoway", type = "consistency", unit = "single")
+
+icc_A_imm
+icc_C_imm
+
+icc_df <- data.frame(Del$Score[Del$Format==1], Del$Score[Del$Format==0])
+
+icc_A_del <- icc(icc_df, model = "twoway", type = "agreement", unit = "single")
+icc_C_del <- icc(icc_df, model = "twoway", type = "consistency", unit = "single")
+
+icc_A_del
+icc_C_del
+
+mydataW$Version_Online <- as.factor(mydataW$Version_Online)
+mydataW$Age <- as.factor(mydataW$Age)
+
+imm_plot <- scatterplot_online_paper(mydataW, "Online_Imm", "Paper_Imm", "Age", "Version_Online",
+                         "Online", "Paper", "LM Imm", c("green", "blue", "red"), c("Young", "Middle", "Older"), 
+                         c(1, 0), c("1" = "Version A", "0" = "Version B"), c(4, 25), c(4, 25))
+
+del_plot <- scatterplot_online_paper(mydataW, "Online_Del", "Paper_Del", "Age", "Version_Online",
+                         "Online", "Paper", "LM Del", c("green", "blue", "red"), c("Young", "Middle", "Older"), 
+                         c(1, 0), c("1" = "Version A", "0" = "Version B"), c(3, 25), c(3, 25))
+imm_plot
+del_plot
+
+# Full model
+
+mydata$Score <- as.numeric(mydata$Score)
+mydata$Format <- factor(mydata$Format)
+mydata$Order <- factor(mydata$Order)
+mydata$Version <- factor(mydata$Version_Online)
+mydata$Age <- as.numeric(mydata$Age)
+
+# full
+lm <-lmer(Score ~ Age*Format*Order*Version*Imm_Del + (1|Participant), data = mydata)
+# summary(lm)
+lm_full <- car::Anova(lm, type=3, test.statistic="F")
+lm_full
+
+simple <- step(lm, ddf = "Satterthwaite", alpha.random = 0.1, alpha.fixed = 0.05, reduce.fixed = TRUE, reduce.random = TRUE)
+m <- get_model(simple)
+# summary(m)
+lm_sim <- car::Anova(m, type=3, test.statistic="F")
+lm_sim
+
+# Explore interactions in reduced model
+
+# 1. Format x Age
+Online = subset(mydata, Format==1)
+lm <-lmer(Score ~ Age + (1|Participant), data = Online)
+#summary(lm)
+car::Anova(lm, type=3, test.statistic="F")
+
+Paper = subset(mydata, Format==0)
+lm <-lmer(Score ~ Age + (1|Participant), data = Paper)
+#summary(lm)
+car::Anova(lm, type=3, test.statistic="F")
+
+# 2. Format x Order x Version
+lm <-lmer(Score ~ Order*Version + (1|Participant), data = Online)
+#summary(lm)
+car::Anova(lm, type=3, test.statistic="F")
+
+lm <-lmer(Score ~ Order*Version + (1|Participant), data = Paper)
+#summary(lm)
+car::Anova(lm, type=3, test.statistic="F")
+
+```
+
+```{r, include = TRUE, warning = FALSE, message = FALSE, fig.cap = "Figure 1. Online raw score against raw paper score per individual coded by age group and conditions. Age: Young - green; middle - blue, old - red. Square - odd trials online; Circle - even trials online."}
+
+(ct_plot | stw_plot) / (imm_plot | del_plot)
+
+```
+
+## Cattell Enrichment --------------------------------------------------------------
+
+```{r, warning = FALSE, message = FALSE}
+
+mydata <- read.csv("cattell_enrich.csv")
+mydata <- mydata %>% drop_na()
+
+names(mydata)[names(mydata) == "record_id"] <- "CC.ID"
+names(mydata)[names(mydata) == "phase_cog_online_paper"] <- "Format"
+
+boxplot(mydata$cattell_total_score, main="Boxplot to Identify Outliers", ylab="Values", col="lightblue")
+outliers <- boxplot.stats(mydata$cattell_total_score)$out
+outliers_CCID <- mydata$CC.ID[mydata$cattell_total_score %in% outliers]
+outlier_data <- data.frame(CC_ID = outliers_CCID, cattell_total_score = outliers)
+
+mydata$cattell_total_score[mydata$cattell_total_score %in% outliers] <- NA
+
+cor.test(mydata$Format, mydata$cattell_age)
+
+mydata <- mydata %>%
+  mutate(Format = case_when(
+    Format == 1 ~ 1, #online = 1 
+    Format == 2 ~ 0, #paper = 0 instead of 2 to align the direction of effects to validation 
+    TRUE ~ Format  
+  ))
+
+# this is done throughout to make the direction of effects more easily comparable 
+
+N_cat_o <- nrow(na.omit(mydata[mydata$Format == 1, ]))
+N_cat_p <- nrow(na.omit(mydata[mydata$Format == 0, ]))
+cat_total <- N_cat_o + N_cat_p
+
+o <- mydata[mydata$Format == 1, ]
+p <- mydata[mydata$Format == 0, ]
+
+t.test(o$cattell_age, p$cattell_age, paired = FALSE)
+
+# regress
+
+mydata$Format <- factor(mydata$Format)
+mydata$cattell_age <- as.numeric(mydata$cattell_age)
+mydata$Format <- factor(mydata$Format)
+
+ct2 <- lm(cattell_total_score ~ poly(cattell_age,2)*Format, data = mydata)
+#summary(ct2)
+ctres <- car::Anova(ct2, type=3, test.statistic="F")
+ctres
+
+cattell <- scatterplot(mydata, "cattell_age", "cattell_total_score", "Format",
+            "Age", "Score", "Cattell",
+            c("0" = "orange", "1" = "darkblue"), 
+            c("1" = "Online", "0" = "Paper"))
+cattell
+
+```
+
+
+```{r, include=TRUE, warning = FALSE, message = FALSE,fig.cap = "Figure 3. Age distribution for Online vs Paper in the Enrichment phase"}
+
+# Create the histogram
+ggplot(mydata, aes(x = cattell_age, fill = factor(Format, labels = c('Paper', 'Online')))) +
+  geom_histogram(binwidth = 1, position = "dodge", alpha = 1) +
+  labs(x = "Age", y = "N", fill = NULL) +
+  # ggtitle("Age Distribution by Format") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    legend.position = "top", 
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "transparent", color = NA),
+    panel.background = element_blank(),
+    panel.grid.major = element_line(color = "lightgrey", size = 0.5), 
+    panel.grid.minor = element_line(color = "lightgrey", size = 0.25)
+  )+
+  scale_fill_manual(values = c("Paper" = "darkblue", "Online" = "orange"))
+
+```
+
+## STW Enrichment
+
+```{r}
+
+mydata <- read.csv("stw_enrich.csv")
+mydata <- mydata %>% drop_na()
+
+names(mydata)[names(mydata) == "record_id"] <- "CC.ID"
+names(mydata)[names(mydata) == "phase_cog_online_paper"] <- "Format"
+
+mydata <- mydata %>%
+  mutate(Format = case_when(
+    Format == 1 ~ 1,
+    Format == 2 ~ 0,
+    TRUE ~ Format 
+  ))
+
+stw_plot_data  <- mydata[, c("stw_age","stw_n_correct_trials")]
+ggpairs(stw_plot_data)
+
+boxplot(mydata$stw_n_correct_trials, main="Boxplot to Identify Outliers", ylab="Values", col="lightblue")
+outliers <- boxplot.stats(mydata$stw_n_correct_trials)$out
+outliers_CCID <- mydata$CC.ID[mydata$stw_n_correct_trials %in% outliers]
+outlier_data <- data.frame(CC_ID = outliers_CCID, stw_n_correct_trials = outliers)
+
+mydata$stw_n_correct_trials[mydata$stw_n_correct_trials %in% outliers] <- NA
+
+stw_plot_data  <- mydata[, c("stw_age","stw_n_correct_trials")]
+ggpairs(stw_plot_data)
+
+N_stw_o <- nrow(na.omit(mydata[mydata$Format == 1, ]))
+N_stw_p <- nrow(na.omit(mydata[mydata$Format == 0, ]))
+stw_total <- N_stw_o + N_stw_p
+
+mydata$Format <- factor(mydata$Format)
+mydata$age <- as.numeric(mydata$stw_age)
+
+stw <- lm(stw_n_correct_trials ~ poly(age, 2)*Format, data = mydata)
+# summary(stw)
+stwres <- car::Anova(stw, type=3, test.statistic="F")
+stwres
+
+stw <- scatterplot(mydata, "stw_age", "stw_n_correct_trials", "Format",
+            "Age", "Score", "STW",
+            c("0" = "orange", "1" = "darkblue"), 
+            c("1" = "Online", "0" = "Paper"))
+stw
+
+# end 
+
+```
+
+```{r, include = TRUE, echo = FALSE, warning = FALSE, message = FALSE, fig.cap = "Figure 4. Test performance split by Format with fits of second-order polynomial expansion of Age."}
+
+cattell | stw
+
+```
+
